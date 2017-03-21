@@ -1,0 +1,637 @@
+---
+title: "Starbucks data from Kaggle"
+author: "KK Maurya (kmaurya@gmail.com)"
+date: "28 February 2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+### I am new to R programming and a total novice to Geospatial analysis and programming
+### For this assignment from Kaggle, have taken help from: 
+### 1. YouTube **Getting started with Spatial Data Analysis in R"** by **Daniel Emaasit**.
+### 2. **Leaflet** help documents,
+### 3. Stackoverflow, and 
+### 4. Some self learning
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Starbucks Locations Worldwide
+#### Name, ownership type, and location of every Starbucks store in operation
+
+### Context
+
+Starbucks started as a roaster and retailer of whole bean and ground coffee, tea and spices with a single store in Seattle's Pike Place Market in 1971. The company now operates more than 24,000 retail stores in 70 countries.
+
+### Content
+
+This dataset includes a record for every Starbucks or subsidiary store location currently in operation as of February 2017.
+
+### Acknowledgements
+
+This data was scraped from the Starbucks store locator webpage by Github user chrismeller.
+
+### Inspiration
+
+What city or country has the highest number of Starbucks stores per capita? What two Starbucks locations are the closest in proximity to one another? What location on Earth is farthest from a Starbucks? How has Starbucks expanded overseas?
+
+### Note: My focus is showing technological capabilities around spatial mapping along with the problem solution.
+
+```{r warning=FALSE, message=FALSE}
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(magrittr))
+suppressPackageStartupMessages(library(readr))
+suppressPackageStartupMessages(library(lubridate))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(classInt))
+suppressPackageStartupMessages(library(countrycode))
+```
+
+
+### Read the CSV file  and explore data
+
+```{r warning=FALSE, message=FALSE}
+# read the strings not as factors and set encoding to "UTF-8" for Chinese cities
+starbucks_all <- read.csv(".\\directory.csv", encoding = "UTF-8", stringsAsFactors = FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+dim(starbucks_all)
+```
+
+```{r warning=FALSE, message=FALSE, results='hide'}
+colnames(starbucks_all)
+```
+
+```{r warning=FALSE, message=FALSE, results='hide'}
+str(starbucks_all)
+```
+
+
+```{r warning=FALSE, message=FALSE, results='hide'}
+# what are the unique Brand Name, Cities, Provinces, Country and Continents (Timezones)
+Brand <- unique(starbucks_all$Brand)
+City <- unique(starbucks_all$City)
+Province <- unique(starbucks_all$State.Province)
+Country <- unique(starbucks_all$Country)
+Timezone  <- unique(starbucks_all$Timezone)
+
+```
+
+```{r}
+head(starbucks_all)
+```
+
+```{r warning=FALSE, message=FALSE, results="hide"}
+summary(starbucks_all)
+```
+
+## Data preprocessing
+
+```{r warning=FALSE, message=FALSE, results="hide"}
+# 1. convert Brand, Ownership.Type to factor
+starbucks_all$Brand <- as.factor(starbucks_all$Brand)
+starbucks_all$Ownership.Type <- as.factor(starbucks_all$Ownership.Type)
+# 2. Country column is renamed to CountryCode
+colnames(starbucks_all)[colnames(starbucks_all) == 'Country'] <- 'CountryCode'
+```
+
+```{r warning=FALSE, message=FALSE, results="hide"}
+# convert contry code to country name using R package 'countrycode'
+starbucks_all$Country <- countrycode(starbucks_all$CountryCode, "iso2c", "country.name")
+head(starbucks_all$Country)
+```
+
+
+```{r warning=FALSE, message=FALSE, results="hide"}
+# extract the timezone data - continent and region / city name
+# eg. India - Delhi, Europe - Andorra
+# AT THIS MOMENT I AM NOT SURE HOW THIS WILL HELP. BUT, GETTTING THE DATA READY :-)
+# OlsonNames() inbuilt function which lists all the timezones on earth
+
+# function to get the timezone regions eg Asia/Saigon, America/Chicago, Europe/Moscow
+
+split_tz <- function(strTimezone){
+  TimeZoneRegion <- c()
+    for(i in 1:length(strTimezone)){
+      # get the continent/city combination and store in new variable, eg. Asia/Saigon
+      TimeZoneRegion[i] <- strsplit(strTimezone[i], ' ')[[1]][2]
+    }
+  return(TimeZoneRegion)
+}
+
+# executing the function
+starbucks_all$TimezoneRegion <- split_tz(starbucks_all$Timezone)
+
+# function to further split the continent/City, part of timezone
+split_tzRegion <- function(strRegion){
+    tzConti <- c()
+    tzCity <- c()
+    
+    for(i in 1:length(strRegion)){
+      str <- strsplit(strRegion[i], '/')
+   
+      tzConti[i] <- str[[1]][1]
+      
+      if(length(str[[1]]) > 2){
+        tzCity[i] <- paste(str[[1]][2], '-', str[[1]][3])
+      }
+      else{
+        tzCity[i] <- str[[1]][2]
+      }
+     }
+    return (list(tzConti, tzCity))
+}
+
+# extract the continents
+starbucks_all$tzContinent <- split_tzRegion(starbucks_all$TimezoneRegion)[[1]]
+
+# extract the city
+starbucks_all$tzCity <- split_tzRegion(starbucks_all$TimezoneRegion)[[2]]
+
+# verify the new coulmns and values in those
+str(starbucks_all)
+head(starbucks_all)
+tail(starbucks_all)
+
+```
+
+```{r fliter_starbucks, warning=FALSE, message=FALSE, results="hide"}
+
+# categories of coffee shop brands
+table(starbucks_all$Brand)
+
+# keep only starbucks for our analysis
+starbucks <- starbucks_all[starbucks_all$Brand == "Starbucks", ]
+
+# verify
+table(starbucks$Brand)
+nrow(starbucks)
+```
+
+## Spatial Data Analysis
+
+```{r warning=FALSE, message=FALSE, results="hide"}
+# load the required packages for spatial analysis
+suppressPackageStartupMessages(library(sp))
+suppressPackageStartupMessages(library(rgdal))
+suppressPackageStartupMessages(library(rgeos))
+suppressPackageStartupMessages(library(raster))
+suppressPackageStartupMessages(library(maps))
+suppressPackageStartupMessages(library(mapdata))
+suppressPackageStartupMessages(library(mapproj))
+suppressPackageStartupMessages(library(maptools))
+suppressPackageStartupMessages(library(tmap))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(ggmap))
+suppressPackageStartupMessages(library(leaflet))
+suppressPackageStartupMessages(library(spatstat))
+suppressPackageStartupMessages(library(gstat))
+```
+
+### Spatial points dataframe
+In order to leverage the classes and methods in several spatial packages,
+including the **sp** package, we need to convert the **starbucks** dataframe 
+into **SpatialPointsDataFrame**.
+```{r warning=FALSE, message=FALSE, results="hide"}
+## Convert to SpatialPointsDataframe with longitude and latitude so as to use spatial packages
+## The Coordinate Reference System is a Geographic CRS called **WGS84**
+
+# check for NAs
+which(is.na(starbucks))
+
+# remove NAs as rows : 137872 214672 289629 315229
+starbucks_cln <- na.omit(starbucks)
+sum(is.na(starbucks_cln))
+
+#----------------------
+coords <- SpatialPoints(starbucks_cln[, c('Longitude','Latitude')])
+starbucks_spatial_df <- SpatialPointsDataFrame(coords, starbucks_cln)
+proj4string(starbucks_spatial_df) <- CRS('+proj=longlat +ellps=WGS84')
+#----------------------
+
+head(starbucks_spatial_df)
+typeof(starbucks_spatial_df)
+```
+The functions, SpatialPoints, SpatialPointsDataFrame, CRS, proj4string come from **sp** package 
+for spatial analysis. The foundation class for this package is **Spatial** from which other sub classes are 
+generated including the following:
+```{r sp_classes, warning=FALSE, message=FALSE}
+getClass("Spatial")
+```
+
+Now, let's look at the structure of the new data type:
+```{r warning=FALSE, message=FALSE, results="hide"}
+str(starbucks_spatial_df)
+```
+The **starbucks_spatial_df** is of type **SpatialPointsDataFrame** and consists of 5 slots/components:
+1. **data**: *The original data that was read into R*
+2. **coords.nrs**: *The data type of the coordinates*
+3. **coords**: *These are the coordinates*
+4. **bbox**: *This is the bounding box of the coordinates*
+5. **proj4string**: *This is the coordinate reference system. This GEOGRAPHIC coordinate system using **CRS** function.*
+
+## There are 2 types of Coordinate Reference System:
+### 1. Geographic Coordinate Reference System (longitude and latitude). eg WGS84
+### 2. Cartesian/Projected/Planar Coordinate System (x, y). Earth is considered to be flat and distances measured in meters / km
+
+## Categories of Projected Coordinate Reference System:
+### 1. State Plane (NAD 83): Mostly used in United States eg Nevada State Plane NADS83
+### 2. Universal Transverse Mercator (UTM) eg., Nevada (UTM Zone 11N), South Africa (UTM Zones 34S & 35S)
+
+Alternatively, you could use the **coordinates()** command as follows:
+
+```{r coordinates_method, warning=FALSE, message=FALSE, results="hide"}
+starbucks_spatial_df <- starbucks_cln
+coordinates(starbucks_spatial_df) <- c("Longitude", "Latitude")
+proj4string(starbucks_spatial_df) <- CRS("+proj=longlat +ellps=WGS84")
+str(starbucks_spatial_df)
+```
+
+We now have a spatial points data frame with the right coordinate system and time data.
+We should **save a copy** of this as an R data file.
+```{r write_data, warning=FALSE, message=FALSE, results="hide"}
+saveRDS(starbucks_spatial_df, "data/starbucks_spatial_df.rds")
+```
+
+Alternatively, we can **save our processed data as ESRI shapefile** so as to maintain the spatial integrity, 
+also, if you need to use with other GPS systems. The **rgDal** package provides *writeOGR* command for writing
+out spatial data types.
+```{r write_shapefile, warning=FALSE, message=FALSE, results="hide"}
+writeOGR(starbucks_spatial_df, dsn="data/shapefiles", layer = "starbucks-shapefile", driver = "ESRI Shapefile", overwrite_layer = TRUE)
+```
+
+**Reading the world shape file**  This shape file was downloaded separately as I wanted to have the world map drawn and starbucks locations over lay on it.
+```{r read_shapefile, warning=FALSE, message=FALSE}
+unzip("data/shapefiles/TM_WORLD_BORDERS-0.3.zip", exdir = "data/shapefiles", overwrite = TRUE)
+world_shape <- readOGR(dsn = "data/shapefiles", layer = "TM_WORLD_BORDERS-0.3")
+class(world_shape)
+```
+
+Alternatively, we could use the **readShapeSpatial()** function from the **maptools** package to read shapefile data.
+```{r warning=FALSE, message=FALSE}
+world_shape2 <- readShapeSpatial("data/shapefiles/TM_WORLD_BORDERS-0.3.shp", 
+                                     proj4string = CRS("+proj=longlat +datum=WGS84"))
+
+class(world_shape2)
+```
+
+Our shapefile is of type **SpatialPointsDataFrame**. We can take a quick look at by plotting in 
+using the **plot()** function
+```{r quick_plot, warning=FALSE, message=FALSE}
+plot(world_shape, col = brewer.pal(9, "Reds"), axes=TRUE)
+```
+
+A method for exploring the bouding area of any spatial object is the **bbox()** method. The first 
+row reports the west-east range and the second the south-north direction.
+```{r bounding_box, warning=FALSE, message=FALSE}
+bbox(starbucks_spatial_df)
+```
+
+We can explore the project system of any spatial object using the **proj4string()** method.
+This method can also be used to assign a different coordinate system to a spatial object, if needed.
+```{r proj4string_method, warning=FALSE, message=FALSE}
+proj4string(starbucks_spatial_df)
+```
+
+We can explore / extract the individual slots in our spatial points data frame
+by using the **@** symbol instead of **$** symbol
+```{r data_slots, warning=FALSE, message=FALSE}
+head(starbucks_spatial_df@data)
+head(starbucks_spatial_df@coords, 4)
+```
+
+The **sp** package provides functions for plotting spatial data by adding layers incrementally. 
+```{r plot_polygon, warning=FALSE, message=FALSE}
+plot(world_shape, col = brewer.pal(9, "Reds"), axes=TRUE)
+```
+
+Let's add **Starbucks** data on the map. Use the argument **add=TRUE** to add another layer on the plot.
+Here, we add the starbucks outlets across the globe. US has the largest number of outlets, followed by Europe,
+then Asia and APAC regions. Interestingly, African countries have almost no outlet. Does it indicates low per
+capita GDP, poverty, unstability? Then Australia and Russia too have very few outlest ? Why?
+```{r add_points, warning=FALSE, message=FALSE}
+plot(world_shape, col = brewer.pal(9, "Reds"), axes=TRUE)
+plot(starbucks_spatial_df, pch=21, bg="yellow", cex=0.8, alpha=0.9, add = TRUE)
+```
+
+Add title and legend
+```{r add_title_legend, warning=FALSE, message=FALSE}
+plot(world_shape, col = brewer.pal(9, "Reds"), axes=TRUE)
+plot(starbucks_spatial_df, pch=21, bg="yellow", cex=0.8, alpha=0.9, add = TRUE)
+title("Starbucks' outlets in different countries")
+legend("bottomleft", title = "Legend", legend = "Starbucks locations", pch = 21, pt.bg = "yellow", bty = "n")
+```
+
+### Visualizing the starbucks data using external libraries
+
+#### ggplot2
+ggplot2 works with data frame and not with objects of class **Spatial**. So, we have to convert 
+them using **fortify()** function from ggplot2
+
+```{r fortify, warning=FALSE, message=FALSE, results="hide"}
+starbucks_df <- data.frame(starbucks_spatial_df)
+world_shape_df <- fortify(world_shape)
+```
+
+Let's use **ggplot2**
+
+```{r ggplot2_options, warning=FALSE, message=FALSE}
+p <- ggplot() + 
+  geom_polygon(data = world_shape_df, aes(x=long, y=lat, group=group), color="black", fill=NA) +
+  geom_point(data = starbucks_df, aes(x=Longitude, y=Latitude), color="red", size=1) +
+  coord_equal() +
+  labs(title = "Starbucks outlets in different countries") +
+  xlab("Longitude") +
+  ylab("Latitude")
+
+p
+```
+
+#### ggmap
+
+```{r BackgroundLayer, echo=TRUE, cache=TRUE}
+map_dat_google <- get_map(source="google")
+#map_dat_osm <- get_openstreetmap(urlonly = TRUE)
+#typeof(map_dat_osm)
+```
+
+
+use ggmap command to make the plot
+```{r warning=FALSE, message=FALSE}
+worldMap <- ggmap(map_dat_google, extent = "normal")
+worldMap + geom_polygon(data=world_shape_df, aes(x=long, y=lat, group=group), fill="red", alpha=0.2) + geom_point(data=starbucks_df, aes(x=Longitude, y=Latitude, color=Brand), size=1, alpha=0.5)
+
+```
+
+plot the "shapefile"
+```{r add_shapefile, warning=FALSE, message=FALSE}
+worldMap2 <- worldMap + 
+  geom_polygon(data = world_shape_df, aes(x=long, y=lat, group=group), colour="black", fill=NA)
+
+worldMap2
+```
+
+Geocode the Starbucks outlets using longitude and latitude variable
+```{r add_points_to_map, warning=FALSE, message=FALSE}
+worldMap3 <- worldMap2 + 
+  geom_point(data = starbucks_df, aes(x=Longitude, y=Latitude), color="darkred", size=1, alpha=0.5)
+
+worldMap3
+```
+
+#### using tmap()
+```{r tmap_function}
+
+brand_num <- data.frame(table(starbucks$Brand))
+brand_num$Perc <- brand_num$Freq/sum(brand_num$Freq) * 100
+
+tm_shape(world_shape, zoom=21) +
+  tm_polygons(palette ="blue", contrast=0.5, title="Starbucks Worldwide") +
+  tm_shape(starbucks_spatial_df) +
+  tm_bubbles(size=0.04, col="red", border.col="yellow", border.alpha=0.5, 
+             style="fixed", breaks=c(-Inf, seq(0,6,by=2), Inf),
+             palette="RdYlBu", contrast=1, title.size=1, title.col="black") +
+  tm_format_World(bg.color="lightblue")
+
+```
+
+
+#### using leaflet()
+
+
+```{r leaflet_simplest_form, warning=FALSE, message=FALSE}
+# addTiles divides the entire map in smaller sections (Tiles) whoch helps loading the map much fatser, along with
+# the spatial data - longitude and latitude
+leaflet(starbucks) %>% addTiles() %>% addCircleMarkers(radius = 2)
+```
+
+
+Modified Circle Markers with size (radius) and color. Also, have added the markers to show the continent/sub-continents. (I am sure there must be better ways to show specfic spots on the map plot. )
+```{r warning=FALSE, message=FALSE}
+#  customize the color, radius, stroke, opacity, etc.
+unique(starbucks$tzContinent)
+
+pal <- colorFactor(c("navy", "red", "green", "lightblue", "darkblue", "pink", "purple", "pink"), 
+          domain = c("Europe","Asia","America","Australia","Africa","Atlantic","Pacific","Etc"))
+
+
+# Pass the palette function a data vector to get the corresponding colors
+class(starbucks$tzContinent)
+
+leaflet(starbucks) %>% 
+  addTiles() %>%
+  addCircleMarkers(
+    radius = 2,
+    color = ~pal(tzContinent),
+    stroke = FALSE, fillOpacity = 0.5
+  ) %>% 
+  addMarkers(lng = -98.456554, lat = 34.095,
+             label = "North America",
+             labelOptions = labelOptions(noHide = T, textOnly = TRUE)) %>%
+  addMarkers(lng = -62.456554, lat = -11.095,
+             label = "South America",
+             labelOptions = labelOptions(noHide = T, textOnly = TRUE)) %>%
+  addMarkers(lng = 15.780499, lat = 48.321437,
+             label = "Central Europe",
+             labelOptions = labelOptions(noHide = T, textOnly = TRUE)) %>%
+  addMarkers(lng = 1.780499, lat = 45.321437,
+             label = "Europe",
+             labelOptions = labelOptions(noHide = T, textOnly = TRUE)) %>%
+  addMarkers(lng = 17.780499, lat = 14.321437,
+             label = "Africa",
+             labelOptions = labelOptions(noHide = T, textOnly = TRUE)) %>%
+  addMarkers(lng = 40.780499, lat = 25.321437,
+             label = "Middle East",
+             labelOptions = labelOptions(noHide = T, textOnly = TRUE)) %>%
+  addMarkers(lng = 135.780499, lat = 38.321437,
+             label = "East Asia",
+             labelOptions = labelOptions(noHide = T, textOnly = TRUE)) %>%
+  addMarkers(lng = 148.780499, lat = -37.321437,
+             label = "ANZ",
+             labelOptions = labelOptions(noHide = T, textOnly = TRUE)) %>%
+  addMarkers(lng = 105.780499, lat = 12.321437,
+             label = "South East Asia",
+             labelOptions = labelOptions(noHide = T, textOnly = TRUE))
+```
+
+
+Grouping the starbucks City wise, globally
+```{r grouping_option, warning=FALSE, message=FALSE}
+# grouping using showGroup()
+leaflet(starbucks) %>% addTiles() %>% 
+  addCircles(lng = ~Longitude, lat = ~Latitude, weight = 1, radius = markerClusterOptions()) %>%
+  showGroup(starbucks$City) %>% 
+  addCircleMarkers(
+    radius = 2,
+    color = ~pal(tzContinent),
+    stroke = FALSE, fillOpacity = 0.5
+  ) 
+```
+
+
+Adding customized icons in place of built-in marker
+```{r warning=FALSE, message=FALSE}
+starbucksIcon <- makeIcon("./Data/starbucks_img.jpg", 18, 28)
+
+# Awesome icons
+getColor <- function(starbucks_df) {
+  sapply(starbucks_df$tzContinent, function(conti) {
+    if(conti == "America") {
+      "lightgreen"
+    } else if(conti == "Europe") {
+      "orange"
+    } else if (conti == "Asia"){
+      "darkblue"
+    } else if (conti == "Australia"){
+      "lightblue"
+    } else if (conti == "Africa"){
+      "lightgray"
+    } else if (conti == "Atlantic"){
+      "purple"
+    } else{
+      "pink"
+    }})
+}
+
+# coloring the continents
+icons <- awesomeIcons(
+  icon = 'ios-close',
+  iconColor = 'black',
+  library = 'ion',
+  markerColor = getColor(starbucks)
+)
+
+# drawing the layered map
+leaflet() %>% 
+      addTiles() %>% 
+      addAwesomeMarkers(data=starbucks, lng=~Longitude, lat=~Latitude, 
+                        popup=~Brand, label = ~City, icon=icons())
+```
+
+
+Clustering options which aggregates the Starbucks outlets as per locations - Continents, Countries, City
+Used Java Script for detailed clustering
+```{r clustering_options, warning=FALSE, message=FALSE}
+# clustering options
+leaflet(starbucks) %>% addTiles() %>% 
+  addCircles(lng = ~Longitude, lat = ~Latitude, weight = 1, radius = markerClusterOptions()) %>%
+  addMarkers(  clusterOptions = markerClusterOptions(iconCreateFunction=JS("function (cluster) {    
+                                      var childCount = cluster.getChildCount(); 
+                                      var c = ' marker-cluster-';  
+                                      if (childCount < 100) {  
+                                      c += 'large';  
+                                      } else if (childCount < 1000) {  
+                                      c += 'medium';  
+                                      } else { 
+                                      c += 'small';  
+                                      }    
+                                      return new L.DivIcon({ html: '<div><span>' + childCount + 
+                                                  '</span></div>', className: 'marker-cluster' + c, 
+                                                  iconSize: new L.Point(40, 40) });
+                                      
+                                      }")))
+```
+
+
+```{r Count_city_country_wise, warning=FALSE, message=FALSE}
+library(plyr);
+library(dplyr)
+
+#dt_country <- count(starbucks, vars = c("Country", "State.Province"))
+dt_country <- count(starbucks, vars = c("Country"))
+colnames(dt_country) <- c("Country", "Counts")
+head(dt_country)
+
+
+dt_city <- count(starbucks, vars = c("tzCity"))
+# largest number on top and the decreasing
+#dt_city[order(dt_city$freq, decreasing = TRUE), ]$freq > 99
+#dt_city[dt_city$freq>99, ]
+
+#sessionInfo()
+```
+
+
+using Bar chart to show the number of outlets in descending order as per Country
+```{r warning=FALSE, message=FALSE}
+#sum(dt_country[dt_country$Country == "United States of America", "freq"])
+dt_country <- transform(dt_country, Country_name = reorder(Country, Counts))
+
+g1 <- ggplot(dt_country, aes(x=Country_name, y=Counts)) + geom_bar(stat="identity", fill="blue")
+g1 <- g1 + coord_flip()
+#g1 <- theme(axis.text.y = element_text(size=rel(0.8)))+labs(title="Starbucks outlets")
+g1
+```
+
+
+US' states data. Similar can be done for other countries
+```{r warning=FALSE, message=FALSE}
+# select only US
+starbucks_us <- starbucks[starbucks$Country == "United States of America", ]
+
+# clustering options
+leaflet(starbucks_us) %>% addTiles() %>% 
+  addCircles(lng = ~Longitude, lat = ~Latitude, weight = 1, radius = markerClusterOptions()) %>%
+  addMarkers(  clusterOptions = markerClusterOptions(iconCreateFunction=JS("function (cluster) {    
+                                      var childCount = cluster.getChildCount(); 
+                                      var c = ' marker-cluster-';  
+                                      if (childCount < 100) {  
+                                      c += 'large';  
+                                      } else if (childCount < 1000) {  
+                                      c += 'medium';  
+                                      } else { 
+                                      c += 'small';  
+                                      }    
+                                      return new L.DivIcon({ html: '<div><span>' + childCount + 
+                                                  '</span></div>', className: 'marker-cluster' + c, 
+                                                  iconSize: new L.Point(40, 40) });
+                                      
+                                      }")))
+
+```
+
+using Bar chart to show the number of outlets in descending order as per US states
+```{r message=FALSE, error=FALSE}
+# filter US states
+dt_city <- count(starbucks_us, vars = "State.Province")
+colnames(dt_city) <- c("State", "Counts")
+dt_city <- transform(dt_city, State = reorder(State, Counts))
+
+g2 <- ggplot(dt_city, aes(x=State, y=Counts)) + geom_bar(stat="identity", fill="blue")
+g2 <- g2 + coord_flip()
+g2 <- g2 + labs(title="Starbucks outlets in US States")
+g2 <- g2 + theme(axis.text.y = element_text(size=rel(0.7)))
+g2
+```
+
+
+Below code is to find the 2 closest Starbucks outlets on earth.
+This is not complete yet. DO NOT RUN THIS CODE ON low end laptop
+```{r}
+class(starbucks)
+class(starbucks_spatial_df)
+
+str(starbucks_spatial_df)
+str(starbucks)
+
+starbucks_spatial_df@coords[1:4, 1:2]
+
+# calculate pairwise distances between points
+# dist <- gDistance(starbucks_spatial_df,, byid=T)
+
+# Find second shortest distance (closest distance is of point to itself, therefore use second shortest)
+# min.dist <- apply(dist, 1, function(x) order(x, decreasing=F)[2])
+
+# create new data frame with desired variables
+# newdata <- cbind(starbucks, starbucks[min.dist,], apply(dist, 1, function(x) sort(x, decreasing=F)[2]))
+
+# newdata
+```
+
+
+
+
+
